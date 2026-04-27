@@ -1,0 +1,20 @@
+{
+  "name": "rpa-ctg",
+  "version": "1.0.0",
+  "description": "RPA automation para descarga de archivos CTG",
+  "main": "app/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file=.env ./app/main.js",
+    "pm2:start": "pm2 start ecosystem.config.js --env production",
+    "pm2:stop": "pm2 stop rpa-ctg",
+    "pm2:logs": "pm2 logs rpa-ctg",
+    "pm2:status": "pm2 status rpa-ctg"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

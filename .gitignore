@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Environment variables (secrets)
+.env
+
+# Browser profile (local & large)
+profile/
+
+# Logs
+logs/
+*.log
+
+# Local output directories
+ArchivoCTG/
+
+# Generated files
+*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# PM2 process file (optional, if you don't want to commit pm2 dump)
+.pm2/
