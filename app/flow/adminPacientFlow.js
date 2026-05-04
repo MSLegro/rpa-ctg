@@ -16,7 +16,7 @@ export default async function adminPacientFlow(page) {
 
   // Directorio de output: variable de entorno o default según SO
   const outputDir = process.env.OUTPUT_DIR || (
-    process.platform === 'win32' ? 'Z:\\' : '/mnt/Monitoreo_Fetal'
+    process.platform === 'win32' ? 'Z:\\' : `${process.env.HOME}/Monitoreo_Fetal`
   );
 
   // Descargar todos los PDFs (con paginación e idempotencia)
