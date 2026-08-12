@@ -1,6 +1,14 @@
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 
+// Caracteres inválidos en nombres de archivo de Windows: se reemplazan por "_"
+const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001F]/g;
+const HAS_INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001F]/;
+
+function sanitizeForFilename(text) {
+  return text.replace(INVALID_FILENAME_CHARS, '_').trim();
+}
+
 export default class AdminPaciente {
   // La tabla vive dentro de un iframe
   iframeLocator = '#_dmwFrame';
@@ -100,53 +108,64 @@ export default class AdminPaciente {
     const count = await rows.count();
 
     for (let i = 0; i < count; i++) {
-      const row = rows.nth(i);
-      const cells = row.locator('td');
+      try {
+        const row = rows.nth(i);
+        const cells = row.locator('td');
 
-      // Extraer fecha (col 2) e ID (col 7)
-      const dateText = (await cells.nth(1).innerText()).trim();
-      const idText = (await cells.nth(6).innerText()).trim();
+        // Extraer fecha (col 2) e ID (col 7)
+        const rawDate = (await cells.nth(1).innerText()).trim();
+        const rawId = (await cells.nth(6).innerText()).trim();
 
-      // Saltar la fila del header
-      if (dateText === 'Inicio' || idText === 'No. de ID' || idText === '') {
+        // Saltar la fila del header
+        if (rawDate === 'Inicio' || rawId === 'No. de ID' || rawId === '') {
+          continue;
+        }
+
+        // Detectar datos sucios para diagnóstico
+        if (HAS_INVALID_FILENAME_CHARS.test(rawId) || HAS_INVALID_FILENAME_CHARS.test(rawDate)) {
+          console.log(`  ⚠️  Datos con caracteres especiales: id="${rawId}" fecha="${rawDate}"`);
+        }
+
+        // Sanitizar fecha: "24/04/26 10:35 AM" → "24-04-26-10-35-AM"
+        const idText = sanitizeForFilename(rawId);
+        const sanitizedDate = sanitizeForFilename(rawDate.replace(/[\/\s:]/g, '-'));
+        const outputPath = join(outputDir, idText, `${sanitizedDate}.pdf`);
+
+        // Idempotencia: si ya existe, saltar
+        if (existsSync(outputPath)) {
+          console.log(`  ⏭️  Ya existe: ${idText}/${sanitizedDate}.pdf`);
+          skipped++;
+          continue;
+        }
+
+        console.log(`  ⬇️  Descargando: ${idText}/${sanitizedDate}.pdf`);
+
+        // Obtener la URL del link PDF
+        const pdfLink = row.locator('a[title*="versión de impresión (PDF)"]');
+        const href = await pdfLink.getAttribute('href');
+        const pdfUrl = `https://172.16.1.75${href}`;
+
+        // Descargar el PDF como base64 desde el contexto del browser
+        const base64 = await this.page.evaluate(async (url) => {
+          const response = await fetch(url, { credentials: 'include' });
+          const blob = await response.blob();
+          return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.readAsDataURL(blob);
+          });
+        }, pdfUrl);
+
+        const buffer = Buffer.from(base64.split(',')[1], 'base64');
+        mkdirSync(dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, buffer);
+
+        console.log(`  ✅ Guardado: ${idText}/${sanitizedDate}.pdf`);
+        downloaded++;
+      } catch (error) {
+        console.error(`  ❌ Error en fila ${i + 1}: ${error.message}`);
         continue;
       }
-
-      // Sanitizar fecha: "24/04/26 10:35 AM" → "24-04-26-10-35-AM"
-      const sanitizedDate = dateText.replace(/[\/\s:]/g, '-');
-      const outputPath = join(outputDir, idText, `${sanitizedDate}.pdf`);
-
-      // Idempotencia: si ya existe, saltar
-      if (existsSync(outputPath)) {
-        console.log(`  ⏭️  Ya existe: ${idText}/${sanitizedDate}.pdf`);
-        skipped++;
-        continue;
-      }
-
-      console.log(`  ⬇️  Descargando: ${idText}/${sanitizedDate}.pdf`);
-
-      // Obtener la URL del link PDF
-      const pdfLink = row.locator('a[title*="versión de impresión (PDF)"]');
-      const href = await pdfLink.getAttribute('href');
-      const pdfUrl = `https://172.16.1.75${href}`;
-
-      // Descargar el PDF como base64 desde el contexto del browser
-      const base64 = await this.page.evaluate(async (url) => {
-        const response = await fetch(url, { credentials: 'include' });
-        const blob = await response.blob();
-        return new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result);
-          reader.readAsDataURL(blob);
-        });
-      }, pdfUrl);
-
-      const buffer = Buffer.from(base64.split(',')[1], 'base64');
-      mkdirSync(dirname(outputPath), { recursive: true });
-      writeFileSync(outputPath, buffer);
-
-      console.log(`  ✅ Guardado: ${idText}/${sanitizedDate}.pdf`);
-      downloaded++;
     }
 
     return { downloaded, skipped };

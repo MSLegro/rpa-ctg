@@ -21,7 +21,7 @@ module.exports = {
       NODE_ENV: 'production',
       HEADLESS: 'true',
       BROWSER_CHANNEL: 'chrome',
-      // OUTPUT_DIR: '/mnt/archivo-ctg',
+  
     },
 
     // Variables para desarrollo local
