@@ -6,11 +6,12 @@
   "type": "module",
   "scripts": {
     "dev": "node --env-file=.env ./app/main.js",
-    "pm2:start": "pm2 start ecosystem.config.js --env production",
+    "pm2:start": "pm2 start ecosystem.config.cjs --env production",
     "pm2:stop": "pm2 stop rpa-ctg",
     "pm2:logs": "pm2 logs rpa-ctg",
     "pm2:status": "pm2 status rpa-ctg"
   },
+  "packageManager": "pnpm@10.33.0",
   "keywords": [],
   "author": "",
   "license": "ISC",
