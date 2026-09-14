@@ -9,7 +9,7 @@ import { dirname, join } from 'path';
  */
 export default class ManifestManager {
   constructor(manifestPath = null) {
-    const baseDir = process.env.HOME || process.cwd();
+    const baseDir = process.env.HOME || process.env.USERPROFILE || process.cwd();
     this.filePath = manifestPath || process.env.MANIFEST_PATH || join(baseDir, '.rpa-ctg', 'download_manifest.json');
     this.downloadedFiles = new Set();
     this.isLoaded = false;

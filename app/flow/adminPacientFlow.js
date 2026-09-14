@@ -14,14 +14,20 @@ export default async function adminPacientFlow(page) {
   // Click en CTG Archive (navega en la misma página, espera la tabla)
   await adminPacientPage.clickArchiveButton()
 
-  // Directorio de output seguro en disco local ext4
-  const localOutputDir = process.env.OUTPUT_DIR || process.env.OUTPUT_DIR_LOCAL || (
-    process.platform === 'win32' ? 'Z:\\' : `${process.env.HOME}/Monitoreo_Fetal_local`
+  // Detección de plataforma y directorio local seguro
+  const isWindows = process.platform === 'win32';
+  const defaultDir = isWindows ? join(process.cwd(), 'ArchivoCTG') : `${process.env.HOME}/Monitoreo_Fetal_local`;
+
+  // En Windows: si no se define OUTPUT_DIR y OUTPUT_DIR_LOCAL tiene ruta Linux (/home/...), usar ./ArchivoCTG
+  const localOutputDir = process.env.OUTPUT_DIR || (
+    isWindows
+      ? (process.env.OUTPUT_DIR_LOCAL && !process.env.OUTPUT_DIR_LOCAL.startsWith('/home/') ? process.env.OUTPUT_DIR_LOCAL : defaultDir)
+      : (process.env.OUTPUT_DIR_LOCAL || defaultDir)
   );
 
-  // Directorio remoto de destino (para verificación de idempotencia histórica si está montado)
+  // Directorio remoto de destino (opcional para chequear si ya fue transferido)
   const remoteOutputDir = process.env.OUTPUT_DIR_REMOTE || (
-    process.platform === 'win32' ? 'Z:\\' : '/mnt/Monitoreo_Fetal'
+    isWindows ? null : '/mnt/Monitoreo_Fetal'
   );
 
   console.log(`[adminPacientFlow] Directorio de guardado local: ${localOutputDir}`);
