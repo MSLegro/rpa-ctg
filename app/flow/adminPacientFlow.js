@@ -25,12 +25,15 @@ export default async function adminPacientFlow(page) {
       : (process.env.OUTPUT_DIR_LOCAL || defaultDir)
   );
 
-  // Directorio remoto de destino (opcional para chequear si ya fue transferido)
+  // Directorio remoto de destino (para verificación de idempotencia contra el recurso compartido)
   const remoteOutputDir = process.env.OUTPUT_DIR_REMOTE || (
-    isWindows ? null : '/mnt/Monitoreo_Fetal'
+    isWindows ? '\\\\172.16.1.6\\Requerimientos\\Monitoreo_Fetal' : '/mnt/Monitoreo_Fetal'
   );
 
   console.log(`[adminPacientFlow] Directorio de guardado local: ${localOutputDir}`);
+  if (remoteOutputDir) {
+    console.log(`[adminPacientFlow] Directorio compartido remoto: ${remoteOutputDir}`);
+  }
 
   // Descargar todos los PDFs (con paginación, escritura atómica y doble idempotencia)
   await adminPacientPage.downloadAllPdfs(localOutputDir, { remoteDir: remoteOutputDir });

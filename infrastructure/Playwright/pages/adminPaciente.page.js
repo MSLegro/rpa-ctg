@@ -76,17 +76,21 @@ export default class AdminPaciente {
     this.manifest = new ManifestManager();
     this.manifest.load();
 
+    // Sincronizar manifiesto con archivos preexistentes en disco local (ej. ./ArchivoCTG)
+    this.manifest.indexExistingDirectory(outputDir);
+
     // Si el directorio remoto está accesible, indexar archivos preexistentes
     if (options.remoteDir && existsSync(options.remoteDir)) {
-      console.log(`[AdminPaciente] Sincronizando manifiesto con directorio remoto: ${options.remoteDir}`);
+      console.log(`[AdminPaciente] Sincronizando manifiesto con directorio compartido: ${options.remoteDir}`);
       this.manifest.indexExistingDirectory(options.remoteDir);
     }
 
     const maxConsecutiveSkippedPages = Number(process.env.MAX_CONSECUTIVE_SKIPPED_PAGES || 2);
+    const maxPages = Number(process.env.MAX_PAGES || options.maxPages || 0);
     const isFullScan = Boolean(options.fullScan || process.env.FULL_SCAN === 'true');
     const concurrency = Number(process.env.CONCURRENT_DOWNLOADS || 3);
 
-    console.log(`[AdminPaciente] Configuración: Concurrencia=${concurrency}, EarlyStopping=${!isFullScan ? `${maxConsecutiveSkippedPages} páginas` : 'desactivado'}`);
+    console.log(`[AdminPaciente] Configuración: Concurrencia=${concurrency}, EarlyStopping=${!isFullScan ? `${maxConsecutiveSkippedPages} páginas` : 'desactivado'}${maxPages > 0 ? `, Límite MAX_PAGES=${maxPages}` : ''}`);
 
     let currentPage = 1;
     let totalDownloaded = 0;
@@ -99,6 +103,12 @@ export default class AdminPaciente {
       const { downloaded, skipped, totalRows } = await this.#downloadCurrentPage(outputDir, { ...options, concurrency });
       totalDownloaded += downloaded;
       totalSkipped += skipped;
+
+      // Límite de páginas para desarrollo/pruebas locales
+      if (maxPages > 0 && currentPage >= maxPages) {
+        console.log(`[AdminPaciente] 🛑 Límite de páginas para prueba alcanzado (${currentPage}/${maxPages}).`);
+        break;
+      }
 
       // Optimización de Early Stopping:
       // Si todos los archivos de esta página ya existen y no es un full-scan, acumulamos contador
