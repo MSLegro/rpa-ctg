@@ -64,11 +64,10 @@ export default class AdminPaciente {
   }
 
   /**
-   * Descarga todos los PDFs de TODAS las páginas del paginador.
-   * Nombra cada archivo como: {ID}_{fecha}.pdf
-   * Idempotente: saltea archivos que ya existen o están en el manifiesto local.
+   * Descarga todos los PDFs de las páginas del paginador.
+   * Con early-stopping: se detiene si encuentra N páginas consecutivas sin novedades.
    * @param {string} outputDir - Directorio local donde guardar los PDFs
-   * @param {Object} options - Opciones adicionales (ej. remoteDir)
+   * @param {Object} options - Opciones adicionales (ej. remoteDir, fullScan)
    */
   async downloadAllPdfs(outputDir, options = {}) {
     mkdirSync(outputDir, { recursive: true });
@@ -83,16 +82,36 @@ export default class AdminPaciente {
       this.manifest.indexExistingDirectory(options.remoteDir);
     }
 
+    const maxConsecutiveSkippedPages = Number(process.env.MAX_CONSECUTIVE_SKIPPED_PAGES || 2);
+    const isFullScan = Boolean(options.fullScan || process.env.FULL_SCAN === 'true');
+    const concurrency = Number(process.env.CONCURRENT_DOWNLOADS || 3);
+
+    console.log(`[AdminPaciente] Configuración: Concurrencia=${concurrency}, EarlyStopping=${!isFullScan ? `${maxConsecutiveSkippedPages} páginas` : 'desactivado'}`);
+
     let currentPage = 1;
     let totalDownloaded = 0;
     let totalSkipped = 0;
+    let consecutiveSkippedPages = 0;
 
     while (true) {
       console.log(`\n[AdminPaciente] === Página ${currentPage} ===`);
 
-      const { downloaded, skipped } = await this.#downloadCurrentPage(outputDir, options);
+      const { downloaded, skipped, totalRows } = await this.#downloadCurrentPage(outputDir, { ...options, concurrency });
       totalDownloaded += downloaded;
       totalSkipped += skipped;
+
+      // Optimización de Early Stopping:
+      // Si todos los archivos de esta página ya existen y no es un full-scan, acumulamos contador
+      if (!isFullScan && totalRows > 0 && downloaded === 0) {
+        consecutiveSkippedPages++;
+        console.log(`[AdminPaciente] Página sin novedades (${consecutiveSkippedPages}/${maxConsecutiveSkippedPages})`);
+        if (consecutiveSkippedPages >= maxConsecutiveSkippedPages) {
+          console.log(`[AdminPaciente] 🛑 Parada temprana: Se alcanzaron ${maxConsecutiveSkippedPages} páginas consecutivas sin archivos nuevos. Fin del ciclo incremental.`);
+          break;
+        }
+      } else if (downloaded > 0) {
+        consecutiveSkippedPages = 0;
+      }
 
       // Intentar ir a la siguiente página
       const hasNext = await this.#goToNextPage();
@@ -104,114 +123,160 @@ export default class AdminPaciente {
       currentPage++;
     }
 
-    console.log(`\n[AdminPaciente] Descarga completa: ${totalDownloaded} nuevos, ${totalSkipped} ya existentes`);
+    console.log(`\n[AdminPaciente] Descarga completa: ${totalDownloaded} nuevos, ${totalSkipped} ya existentes (Páginas procesadas: ${currentPage})`);
   }
 
   /**
-   * Descarga los PDFs de la página actual de la tabla con escritura atómica.
+   * Descarga los PDFs de la página actual de la tabla en lote y con concurrencia controlada.
    * @param {string} outputDir - Directorio de salida
-   * @param {Object} options - Opciones (ej. remoteDir)
-   * @returns {{ downloaded: number, skipped: number }}
+   * @param {Object} options - Opciones (ej. remoteDir, concurrency)
+   * @returns {{ downloaded: number, skipped: number, totalRows: number }}
    */
   async #downloadCurrentPage(outputDir, options = {}) {
     let downloaded = 0;
     let skipped = 0;
+    const concurrency = options.concurrency || 3;
+    const baseUrl = process.env.APP_BASE_URL || 'https://172.16.1.75';
 
     const frame = this.page.frameLocator(this.iframeLocator);
-    const rows = frame.locator(`${this.tableSelector} tbody tr`);
-    const count = await rows.count();
 
-    for (let i = 0; i < count; i++) {
+    // 1. EXTRACCIÓN EN UN SOLO VIAJE CDP:
+    // En lugar de hacer cientos de llamadas por websocket fila por fila,
+    // extraemos la metadata de toda la tabla en un solo frame.evaluate() en ~5ms.
+    const rawRows = await frame.locator(this.tableSelector).evaluate((table) => {
+      if (!table) return [];
+      const trs = Array.from(table.querySelectorAll('tbody tr'));
+      return trs.map(tr => {
+        const cells = tr.querySelectorAll('td');
+        if (cells.length < 7) return null;
+        const link = tr.querySelector('a[title*="versión de impresión (PDF)"]');
+        return {
+          rawDate: (cells[1]?.innerText || '').trim(),
+          rawId: (cells[6]?.innerText || '').trim(),
+          href: link ? link.getAttribute('href') : null
+        };
+      }).filter(Boolean);
+    }).catch((err) => {
+      console.warn(`[AdminPaciente] Error extrayendo filas de tabla: ${err.message}`);
+      return [];
+    });
+
+    const validRows = [];
+    for (const r of rawRows) {
+      if (r.rawDate === 'Inicio' || r.rawId === 'No. de ID' || !r.rawId || !r.href) {
+        continue;
+      }
+
+      const idText = sanitizeForFilename(r.rawId);
+      const sanitizedDate = sanitizeForFilename(r.rawDate.replace(/[\/\s:]/g, '-'));
+      const relPath = `${idText}/${sanitizedDate}.pdf`;
+      const outputPath = join(outputDir, idText, `${sanitizedDate}.pdf`);
+
+      // Validación de Idempotencia
+      const existsInManifest = this.manifest && this.manifest.has(relPath);
+      const existsInLocal = existsSync(outputPath);
+      let existsInRemote = false;
+      if (options.remoteDir) {
+        try {
+          existsInRemote = existsSync(join(options.remoteDir, relPath));
+        } catch {
+          existsInRemote = false;
+        }
+      }
+
+      if (existsInManifest || existsInLocal || existsInRemote) {
+        if (this.manifest && !existsInManifest) {
+          this.manifest.record(relPath);
+        }
+        skipped++;
+      } else {
+        const resolvedPdfUrl = r.href.startsWith('http')
+          ? r.href
+          : `${baseUrl.replace(/\/+$/, '')}${r.href.startsWith('/') ? '' : '/'}${r.href}`;
+
+        validRows.push({
+          idText,
+          sanitizedDate,
+          relPath,
+          outputPath,
+          pdfUrl: resolvedPdfUrl
+        });
+      }
+    }
+
+    if (skipped > 0) {
+      console.log(`  ⏭️  Saltados en esta página (ya existentes): ${skipped}`);
+    }
+
+    if (validRows.length === 0) {
+      return { downloaded: 0, skipped, totalRows: rawRows.length };
+    }
+
+    console.log(`  ⬇️  Descargando ${validRows.length} archivo(s) nuevos con concurrencia de ${concurrency}...`);
+
+    // 2. DESCARGAS CONCURRENTES CONTROLADAS:
+    // Descarga directa a Buffer sin overhead de Base64 ni memory leak en el browser
+    const downloadFile = async (item) => {
+      let buffer = null;
+
       try {
-        const row = rows.nth(i);
-        const cells = row.locator('td');
-
-        // Extraer fecha (col 2) e ID (col 7)
-        const rawDate = (await cells.nth(1).innerText()).trim();
-        const rawId = (await cells.nth(6).innerText()).trim();
-
-        // Saltar la fila del header
-        if (rawDate === 'Inicio' || rawId === 'No. de ID' || rawId === '') {
-          continue;
+        // Intento 1: API de Request de Playwright (streaming directo a Buffer compartiendo sesión)
+        const response = await this.page.context().request.get(item.pdfUrl, { timeout: 30000 });
+        if (response.ok()) {
+          buffer = await response.body();
+        } else {
+          throw new Error(`HTTP ${response.status()}`);
         }
-
-        // Detectar datos sucios para diagnóstico
-        if (HAS_INVALID_FILENAME_CHARS.test(rawId) || HAS_INVALID_FILENAME_CHARS.test(rawDate)) {
-          console.log(`  ⚠️  Datos con caracteres especiales: id="${rawId}" fecha="${rawDate}"`);
-        }
-
-        // Sanitizar fecha: "24/04/26 10:35 AM" → "24-04-26-10-35-AM"
-        const idText = sanitizeForFilename(rawId);
-        const sanitizedDate = sanitizeForFilename(rawDate.replace(/[\/\s:]/g, '-'));
-        const relPath = `${idText}/${sanitizedDate}.pdf`;
-        const outputPath = join(outputDir, idText, `${sanitizedDate}.pdf`);
-
-        // Doble Idempotencia:
-        // 1. Manifiesto persistente local (en ext4)
-        // 2. Archivo físico existente en local
-        // 3. Archivo físico existente en remoto (si está montado)
-        const existsInManifest = this.manifest && this.manifest.has(relPath);
-        const existsInLocal = existsSync(outputPath);
-        let existsInRemote = false;
-        if (options.remoteDir) {
-          try {
-            existsInRemote = existsSync(join(options.remoteDir, relPath));
-          } catch (e) {
-            // Ignorar errores de I/O en remoto para no bloquear el bot
-            existsInRemote = false;
-          }
-        }
-
-        if (existsInManifest || existsInLocal || existsInRemote) {
-          console.log(`  ⏭️  Ya existe: ${relPath} (manifest=${existsInManifest}, local=${existsInLocal}, remote=${existsInRemote})`);
-          if (this.manifest && !existsInManifest) {
-            this.manifest.record(relPath);
-          }
-          skipped++;
-          continue;
-        }
-
-        console.log(`  ⬇️  Descargando: ${relPath}`);
-
-        // Obtener la URL del link PDF
-        const pdfLink = row.locator('a[title*="versión de impresión (PDF)"]');
-        const href = await pdfLink.getAttribute('href');
-        const pdfUrl = `https://172.16.1.75${href}`;
-
-        // Descargar el PDF como base64 desde el contexto del browser
+      } catch (reqErr) {
+        // Fallback: Evaluación en contexto de navegador con fetch
         const base64 = await this.page.evaluate(async (url) => {
-          const response = await fetch(url, { credentials: 'include' });
-          const blob = await response.blob();
+          const res = await fetch(url, { credentials: 'include' });
+          const blob = await res.blob();
           return new Promise((resolve) => {
             const reader = new FileReader();
             reader.onloadend = () => resolve(reader.result);
             reader.readAsDataURL(blob);
           });
-        }, pdfUrl);
+        }, item.pdfUrl);
+        buffer = Buffer.from(base64.split(',')[1], 'base64');
+      }
 
-        const buffer = Buffer.from(base64.split(',')[1], 'base64');
-        mkdirSync(dirname(outputPath), { recursive: true });
+      // ESCRITURA ATÓMICA (.tmp -> renameSync)
+      mkdirSync(dirname(item.outputPath), { recursive: true });
+      const tempPath = `${item.outputPath}.tmp.${Date.now()}`;
+      writeFileSync(tempPath, buffer);
+      renameSync(tempPath, item.outputPath);
 
-        // ESCRITURA ATÓMICA: Guardar primero en .tmp y luego renombrar.
-        // Esto evita que inotifywait o rsync capturen archivos incompletos.
-        const tempPath = `${outputPath}.tmp.${Date.now()}`;
-        writeFileSync(tempPath, buffer);
-        renameSync(tempPath, outputPath);
+      if (this.manifest) {
+        this.manifest.record(item.relPath);
+      }
 
-        // Registrar en el manifiesto
-        if (this.manifest) {
-          this.manifest.record(relPath);
+      console.log(`  ✅ Guardado: ${item.relPath}`);
+      downloaded++;
+    };
+
+    // Pool de concurrencia simple sin dependencias externas
+    const executing = [];
+    for (const item of validRows) {
+      const p = downloadFile(item).catch(err => {
+        console.error(`  ❌ Error descargando ${item.relPath}: ${err.message}`);
+      });
+      executing.push(p);
+
+      if (executing.length >= concurrency) {
+        await Promise.race(executing);
+        // Filtrar promesas resueltas
+        for (let idx = executing.length - 1; idx >= 0; idx--) {
+          const status = await Promise.race([executing[idx], 'PENDING']);
+          if (status !== 'PENDING') {
+            executing.splice(idx, 1);
+          }
         }
-
-        console.log(`  ✅ Guardado atómicamente: ${relPath}`);
-        downloaded++;
-      } catch (error) {
-        console.error(`  ❌ Error en fila ${i + 1}: ${error.message}`);
-        continue;
       }
     }
+    await Promise.all(executing);
 
-    return { downloaded, skipped };
+    return { downloaded, skipped, totalRows: rawRows.length };
   }
 
   /**

@@ -10,7 +10,9 @@ export default class BrowserManager {
   }
 
   async start() {
-    const isHeadless = true;
+    const isHeadless = this.options.headless !== undefined
+      ? this.options.headless
+      : process.env.HEADLESS !== 'false';
     const browserChannel = process.env.BROWSER_CHANNEL || 'chrome';
 
     console.log(`[BrowserManager] Lanzando ${browserChannel} (headless: ${isHeadless})`);
