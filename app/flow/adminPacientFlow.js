@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 import AdminPaciente from "../../infrastructure/Playwright/pages/adminPaciente.page.js";
 
 const __filename = fileURLToPath(import.meta.url);
