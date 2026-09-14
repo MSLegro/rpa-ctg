@@ -1,0 +1,49 @@
+# ==============================================================================
+# ENTRADA BLINDADA PARA /etc/fstab EN DEBIAN (RPA CTG -> SMB WINDOWS)
+# ==============================================================================
+#
+# Copiar esta línea en /etc/fstab en el servidor Debian:
+#
+//172.16.1.X/Monitoreo_Fetal /mnt/Monitoreo_Fetal cifs credentials=/etc/cifs-credentials-ctg,uid=rpatic,gid=rpatic,file_mode=0664,dir_mode=0775,vers=3.0,soft,rsize=65536,wsize=65536,echo_interval=5,actimeo=1,nofail,_netdev,x-systemd.automount,x-systemd.requires=network-online.target,x-systemd.mount-timeout=10s,x-systemd.idle-timeout=120s 0 0
+
+# ------------------------------------------------------------------------------
+# JUSTIFICACIÓN DE PARÁMETROS DE BLINDAJE:
+# ------------------------------------------------------------------------------
+# 1. x-systemd.automount:
+#    El sistema operativo NO intenta montar el recurso en el arranque inicial,
+#    sino de forma perezosa (on-demand) cuando un proceso accede al directorio /mnt/Monitoreo_Fetal.
+#    Evita que el arranque de Debian se congele si Windows está apagado.
+#
+# 2. x-systemd.idle-timeout=120s:
+#    Si no hay actividad de lectura/escritura durante 120 segundos, systemd desmonta
+#    automáticamente el recurso. Esto previene que una conexión TCP quede "stale" (zombi)
+#    o bloquee descriptores de archivo abiertos por periodos prolongados.
+#
+# 3. x-systemd.mount-timeout=10s:
+#    Si el servidor Windows no responde en 10 segundos al intentar montar, la llamada
+#    falla de inmediato en lugar de colgar el proceso llamante durante minutos.
+#
+# 4. soft:
+#    ¡CRÍTICO! Por defecto CIFS monta con 'hard'. Si Windows se reinicia con 'hard',
+#    las llamadas al kernel se congelan en D-State (Uninterruptible Sleep) para siempre.
+#    Con 'soft', las operaciones de I/O generan un timeout y devuelven un error EIO al
+#    espacio de usuario, permitiendo que scripts y rsync manejen la excepción limpiamente.
+#
+# 5. echo_interval=5:
+#    Envía un SMB echo/keepalive cada 5 segundos. Detecta caídas de red o reinicios
+#    del servidor Windows en segundos en lugar de esperar los 120s habituales del kernel.
+#
+# 6. actimeo=1:
+#    Reduce el cacheo de atributos a 1 segundo para evitar inconsistencias cuando Windows
+#    u otros clientes modifican el directorio compartido.
+#
+# 7. nofail, _netdev:
+#    Indica que es un dispositivo de red y que el fallo de montaje no debe abortar
+#    ni detener el inicio del sistema operativo Debian.
+#
+# 8. uid=rpatic,gid=rpatic,file_mode=0664,dir_mode=0775:
+#    Otorga al usuario del bot 'rpatic' permisos completos de lectura, escritura y ejecución.
+#
+# 9. vers=3.0 (o vers=3.1.1):
+#    Utiliza el protocolo SMB moderno y seguro compatible con Windows Server 2012 R2+ / Windows 10+.
+# ==============================================================================

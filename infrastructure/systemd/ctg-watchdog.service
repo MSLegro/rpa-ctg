@@ -1,0 +1,12 @@
+[Unit]
+Description=RPA CTG - Watchdog and Queue Observability Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=rpatic
+Group=rpatic
+EnvironmentFile=-/home/rpatic/Documentos/projects/rpa-ctg/.env
+ExecStart=/usr/bin/env bash /home/rpatic/Documentos/projects/rpa-ctg/infrastructure/watchdog/watchdog-ctg.sh
+StandardOutput=append:/var/log/rpa-ctg/watchdog.log
+StandardError=append:/var/log/rpa-ctg/watchdog.log

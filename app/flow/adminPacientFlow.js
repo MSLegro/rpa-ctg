@@ -14,13 +14,20 @@ export default async function adminPacientFlow(page) {
   // Click en CTG Archive (navega en la misma página, espera la tabla)
   await adminPacientPage.clickArchiveButton()
 
-  // Directorio de output: variable de entorno o default según SO
-  const outputDir = process.env.OUTPUT_DIR || (
-    process.platform === 'win32' ? 'Z:\\' : `${process.env.HOME}/Monitoreo_Fetal`
+  // Directorio de output seguro en disco local ext4
+  const localOutputDir = process.env.OUTPUT_DIR || process.env.OUTPUT_DIR_LOCAL || (
+    process.platform === 'win32' ? 'Z:\\' : `${process.env.HOME}/Monitoreo_Fetal_local`
   );
 
-  // Descargar todos los PDFs (con paginación e idempotencia)
-  await adminPacientPage.downloadAllPdfs(outputDir);
+  // Directorio remoto de destino (para verificación de idempotencia histórica si está montado)
+  const remoteOutputDir = process.env.OUTPUT_DIR_REMOTE || (
+    process.platform === 'win32' ? 'Z:\\' : '/mnt/Monitoreo_Fetal'
+  );
+
+  console.log(`[adminPacientFlow] Directorio de guardado local: ${localOutputDir}`);
+
+  // Descargar todos los PDFs (con paginación, escritura atómica y doble idempotencia)
+  await adminPacientPage.downloadAllPdfs(localOutputDir, { remoteDir: remoteOutputDir });
 
   return adminPacientPage.page;
 }

@@ -1,0 +1,13 @@
+[Unit]
+Description=RPA CTG - Periodic Sync Sweep to SMB (Fallback & Reconciliation)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rpatic
+Group=rpatic
+EnvironmentFile=-/home/rpatic/Documentos/projects/rpa-ctg/.env
+ExecStart=/usr/bin/env bash /home/rpatic/Documentos/projects/rpa-ctg/infrastructure/sync/sync-ctg.sh
+StandardOutput=append:/var/log/rpa-ctg/sync.log
+StandardError=append:/var/log/rpa-ctg/sync.log

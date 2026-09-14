@@ -1,5 +1,6 @@
-import { mkdirSync, writeFileSync, existsSync } from 'fs';
+import { mkdirSync, writeFileSync, renameSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
+import ManifestManager from '../../storage/ManifestManager.js';
 
 // Caracteres inválidos en nombres de archivo de Windows: se reemplazan por "_"
 const INVALID_FILENAME_CHARS = /[<>:"/\\|?*\u0000-\u001F]/g;
@@ -65,11 +66,22 @@ export default class AdminPaciente {
   /**
    * Descarga todos los PDFs de TODAS las páginas del paginador.
    * Nombra cada archivo como: {ID}_{fecha}.pdf
-   * Idempotente: saltea archivos que ya existen.
-   * @param {string} outputDir - Directorio donde guardar los PDFs
+   * Idempotente: saltea archivos que ya existen o están en el manifiesto local.
+   * @param {string} outputDir - Directorio local donde guardar los PDFs
+   * @param {Object} options - Opciones adicionales (ej. remoteDir)
    */
-  async downloadAllPdfs(outputDir) {
+  async downloadAllPdfs(outputDir, options = {}) {
     mkdirSync(outputDir, { recursive: true });
+
+    // Inicializar el gestor de manifiesto local
+    this.manifest = new ManifestManager();
+    this.manifest.load();
+
+    // Si el directorio remoto está accesible, indexar archivos preexistentes
+    if (options.remoteDir && existsSync(options.remoteDir)) {
+      console.log(`[AdminPaciente] Sincronizando manifiesto con directorio remoto: ${options.remoteDir}`);
+      this.manifest.indexExistingDirectory(options.remoteDir);
+    }
 
     let currentPage = 1;
     let totalDownloaded = 0;
@@ -78,7 +90,7 @@ export default class AdminPaciente {
     while (true) {
       console.log(`\n[AdminPaciente] === Página ${currentPage} ===`);
 
-      const { downloaded, skipped } = await this.#downloadCurrentPage(outputDir);
+      const { downloaded, skipped } = await this.#downloadCurrentPage(outputDir, options);
       totalDownloaded += downloaded;
       totalSkipped += skipped;
 
@@ -96,10 +108,12 @@ export default class AdminPaciente {
   }
 
   /**
-   * Descarga los PDFs de la página actual de la tabla.
+   * Descarga los PDFs de la página actual de la tabla con escritura atómica.
+   * @param {string} outputDir - Directorio de salida
+   * @param {Object} options - Opciones (ej. remoteDir)
    * @returns {{ downloaded: number, skipped: number }}
    */
-  async #downloadCurrentPage(outputDir) {
+  async #downloadCurrentPage(outputDir, options = {}) {
     let downloaded = 0;
     let skipped = 0;
 
@@ -129,16 +143,35 @@ export default class AdminPaciente {
         // Sanitizar fecha: "24/04/26 10:35 AM" → "24-04-26-10-35-AM"
         const idText = sanitizeForFilename(rawId);
         const sanitizedDate = sanitizeForFilename(rawDate.replace(/[\/\s:]/g, '-'));
+        const relPath = `${idText}/${sanitizedDate}.pdf`;
         const outputPath = join(outputDir, idText, `${sanitizedDate}.pdf`);
 
-        // Idempotencia: si ya existe, saltar
-        if (existsSync(outputPath)) {
-          console.log(`  ⏭️  Ya existe: ${idText}/${sanitizedDate}.pdf`);
+        // Doble Idempotencia:
+        // 1. Manifiesto persistente local (en ext4)
+        // 2. Archivo físico existente en local
+        // 3. Archivo físico existente en remoto (si está montado)
+        const existsInManifest = this.manifest && this.manifest.has(relPath);
+        const existsInLocal = existsSync(outputPath);
+        let existsInRemote = false;
+        if (options.remoteDir) {
+          try {
+            existsInRemote = existsSync(join(options.remoteDir, relPath));
+          } catch (e) {
+            // Ignorar errores de I/O en remoto para no bloquear el bot
+            existsInRemote = false;
+          }
+        }
+
+        if (existsInManifest || existsInLocal || existsInRemote) {
+          console.log(`  ⏭️  Ya existe: ${relPath} (manifest=${existsInManifest}, local=${existsInLocal}, remote=${existsInRemote})`);
+          if (this.manifest && !existsInManifest) {
+            this.manifest.record(relPath);
+          }
           skipped++;
           continue;
         }
 
-        console.log(`  ⬇️  Descargando: ${idText}/${sanitizedDate}.pdf`);
+        console.log(`  ⬇️  Descargando: ${relPath}`);
 
         // Obtener la URL del link PDF
         const pdfLink = row.locator('a[title*="versión de impresión (PDF)"]');
@@ -158,9 +191,19 @@ export default class AdminPaciente {
 
         const buffer = Buffer.from(base64.split(',')[1], 'base64');
         mkdirSync(dirname(outputPath), { recursive: true });
-        writeFileSync(outputPath, buffer);
 
-        console.log(`  ✅ Guardado: ${idText}/${sanitizedDate}.pdf`);
+        // ESCRITURA ATÓMICA: Guardar primero en .tmp y luego renombrar.
+        // Esto evita que inotifywait o rsync capturen archivos incompletos.
+        const tempPath = `${outputPath}.tmp.${Date.now()}`;
+        writeFileSync(tempPath, buffer);
+        renameSync(tempPath, outputPath);
+
+        // Registrar en el manifiesto
+        if (this.manifest) {
+          this.manifest.record(relPath);
+        }
+
+        console.log(`  ✅ Guardado atómicamente: ${relPath}`);
         downloaded++;
       } catch (error) {
         console.error(`  ❌ Error en fila ${i + 1}: ${error.message}`);

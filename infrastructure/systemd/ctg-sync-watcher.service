@@ -1,0 +1,22 @@
+[Unit]
+Description=RPA CTG - Inotify Realtime Sync Watcher to SMB
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rpatic
+Group=rpatic
+EnvironmentFile=-/home/rpatic/Documentos/projects/rpa-ctg/.env
+ExecStart=/usr/bin/env bash /home/rpatic/Documentos/projects/rpa-ctg/infrastructure/sync/sync-ctg-watcher.sh
+Restart=always
+RestartSec=10s
+StandardOutput=append:/var/log/rpa-ctg/watcher.log
+StandardError=append:/var/log/rpa-ctg/watcher.log
+
+# Seguridad y aislamiento de proceso
+ProtectSystem=full
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
