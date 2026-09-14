@@ -95,18 +95,24 @@ export default class AdminPaciente {
     let currentPage = 1;
     let totalDownloaded = 0;
     let totalSkipped = 0;
+    let totalErrors = 0;
     let consecutiveSkippedPages = 0;
+    let earlyStopped = false;
+    let earlyStopReason = null;
 
     while (true) {
       console.log(`\n[AdminPaciente] === Página ${currentPage} ===`);
 
-      const { downloaded, skipped, totalRows } = await this.#downloadCurrentPage(outputDir, { ...options, concurrency });
+      const { downloaded, skipped, errors, totalRows } = await this.#downloadCurrentPage(outputDir, { ...options, concurrency });
       totalDownloaded += downloaded;
       totalSkipped += skipped;
+      totalErrors += (errors || 0);
 
       // Límite de páginas para desarrollo/pruebas locales
       if (maxPages > 0 && currentPage >= maxPages) {
-        console.log(`[AdminPaciente] 🛑 Límite de páginas para prueba alcanzado (${currentPage}/${maxPages}).`);
+        earlyStopped = true;
+        earlyStopReason = `Límite de prueba MAX_PAGES=${maxPages} alcanzado`;
+        console.log(`[AdminPaciente] 🛑 ${earlyStopReason}.`);
         break;
       }
 
@@ -116,6 +122,8 @@ export default class AdminPaciente {
         consecutiveSkippedPages++;
         console.log(`[AdminPaciente] Página sin novedades (${consecutiveSkippedPages}/${maxConsecutiveSkippedPages})`);
         if (consecutiveSkippedPages >= maxConsecutiveSkippedPages) {
+          earlyStopped = true;
+          earlyStopReason = `Early Stopping (${maxConsecutiveSkippedPages} páginas consecutivas sin novedades)`;
           console.log(`[AdminPaciente] 🛑 Parada temprana: Se alcanzaron ${maxConsecutiveSkippedPages} páginas consecutivas sin archivos nuevos. Fin del ciclo incremental.`);
           break;
         }
@@ -133,7 +141,19 @@ export default class AdminPaciente {
       currentPage++;
     }
 
-    console.log(`\n[AdminPaciente] Descarga completa: ${totalDownloaded} nuevos, ${totalSkipped} ya existentes (Páginas procesadas: ${currentPage})`);
+    console.log(`\n[AdminPaciente] Descarga completa: ${totalDownloaded} nuevos, ${totalSkipped} ya existentes, ${totalErrors} errores (Páginas procesadas: ${currentPage})`);
+
+    return {
+      pagesProcessed: currentPage,
+      downloaded: totalDownloaded,
+      skipped: totalSkipped,
+      errors: totalErrors,
+      earlyStopped,
+      earlyStopReason,
+      manifestCount: this.manifest ? this.manifest.downloadedFiles.size : 0,
+      localOutputDir: outputDir,
+      remoteOutputDir: options.remoteDir || null
+    };
   }
 
   /**
@@ -145,6 +165,7 @@ export default class AdminPaciente {
   async #downloadCurrentPage(outputDir, options = {}) {
     let downloaded = 0;
     let skipped = 0;
+    let errors = 0;
     const concurrency = options.concurrency || 3;
     const baseUrl = process.env.APP_BASE_URL || 'https://172.16.1.75';
 
@@ -269,6 +290,7 @@ export default class AdminPaciente {
     const executing = [];
     for (const item of validRows) {
       const p = downloadFile(item).catch(err => {
+        errors++;
         console.error(`  ❌ Error descargando ${item.relPath}: ${err.message}`);
       });
       executing.push(p);
@@ -286,7 +308,7 @@ export default class AdminPaciente {
     }
     await Promise.all(executing);
 
-    return { downloaded, skipped, totalRows: rawRows.length };
+    return { downloaded, skipped, errors, totalRows: rawRows.length };
   }
 
   /**

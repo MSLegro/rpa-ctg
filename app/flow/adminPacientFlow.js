@@ -36,7 +36,7 @@ export default async function adminPacientFlow(page) {
   }
 
   // Descargar todos los PDFs (con paginación, escritura atómica y doble idempotencia)
-  await adminPacientPage.downloadAllPdfs(localOutputDir, { remoteDir: remoteOutputDir });
+  const report = await adminPacientPage.downloadAllPdfs(localOutputDir, { remoteDir: remoteOutputDir });
 
-  return adminPacientPage.page;
+  return report;
 }
