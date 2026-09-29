@@ -32,7 +32,7 @@ export default async function mainFlow(profilePath) {
   console.log(`• Parada Temprana:        ${earlyStopPages} páginas consecutivas sin novedades`);
   console.log('='.repeat(78) + '\n');
 
-  const browser = new BrowserManager(profilePath);
+  const browser = new BrowserManager(profilePath, { headless: isHeadless });
   let report = null;
   let status = 'EXITOSO';
   let failureReason = null;
